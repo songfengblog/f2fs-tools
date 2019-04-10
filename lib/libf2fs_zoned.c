@@ -7,7 +7,9 @@
  * Dual licensed under the GPL or LGPL version 2 licenses.
  */
 #define _LARGEFILE64_SOURCE
+#define _GNU_SOURCE
 
+#include <f2fs_fs.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +17,12 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#ifdef HAVE_SYS_SYSMACROS_H
+#include <sys/sysmacros.h>
+#endif
+#ifdef HAVE_LINUX_LIMITS_H
+#include <linux/limits.h>
+#endif
 #ifndef ANDROID_WINDOWS_HOST
 #include <sys/ioctl.h>
 #endif
@@ -24,19 +32,85 @@
 
 #ifdef HAVE_LINUX_BLKZONED_H
 
+/*
+ * Read up to 255 characters from the first line of a file. Strip the trailing
+ * newline.
+ */
+static char *read_file(const char *path)
+{
+	char line[256], *p = line;
+	FILE *f;
+
+	f = fopen(path, "rb");
+	if (!f)
+		return NULL;
+	if (!fgets(line, sizeof(line), f))
+		line[0] = '\0';
+	strsep(&p, "\n");
+	fclose(f);
+
+	return strdup(line);
+}
+
+static char *read_sys_attr(const char *dev_path, const char *attr)
+{
+	struct stat statbuf;
+	char *sys_devno_path = NULL;
+	char sys_path[PATH_MAX];
+	ssize_t sz;
+	char *part_attr_path = NULL;
+	char *part_str = NULL;
+	char *delim = NULL;
+	char *attr_path = NULL;
+	char *attr_str = NULL;
+
+	if (stat(dev_path, &statbuf) < 0)
+		goto out;
+
+	if (asprintf(&sys_devno_path, "/sys/dev/block/%d:%d",
+		     major(statbuf.st_rdev), minor(statbuf.st_rdev)) < 0)
+		goto out;
+
+	sz = readlink(sys_devno_path, sys_path, sizeof(sys_path) - 1);
+	if (sz < 0)
+		goto out;
+	sys_path[sz] = '\0';
+
+	/*
+	 * If the device is a partition device, cut the device name in the
+	 * canonical sysfs path to obtain the sysfs path of the holder device.
+	 *   e.g.:  /sys/devices/.../sda/sda1 -> /sys/devices/.../sda
+	 */
+	if (asprintf(&part_attr_path, "/sys/dev/block/%s/partition",
+		     sys_path) < 0)
+		goto out;
+	part_str = read_file(part_attr_path);
+	if (part_str && *part_str == '1') {
+		delim = strrchr(sys_path, '/');
+		if (!delim)
+			goto out;
+		*delim = '\0';
+	}
+
+	if (asprintf(&attr_path, "/sys/dev/block/%s/%s", sys_path, attr) < 0)
+		goto out;
+
+	attr_str = read_file(attr_path);
+out:
+	free(attr_path);
+	free(part_str);
+	free(part_attr_path);
+	free(sys_devno_path);
+	return attr_str;
+}
+
 int f2fs_get_zoned_model(int i)
 {
 	struct device_info *dev = c.devices + i;
-	char str[128];
-	FILE *file;
-	int res;
+	char *model_str;
 
-	/* Check that this is a zoned block device */
-	snprintf(str, sizeof(str),
-		 "/sys/block/%s/queue/zoned",
-		 basename(dev->path));
-	file = fopen(str, "r");
-	if (!file) {
+	model_str = read_sys_attr(dev->path, "queue/zoned");
+	if (!model_str) {
 		/*
 		 * The kernel does not support zoned block devices, but we have
 		 * a block device file. This means that the device is not zoned
@@ -47,29 +121,22 @@ int f2fs_get_zoned_model(int i)
 		return 0;
 	}
 
-	memset(str, 0, sizeof(str));
-	res = fscanf(file, "%s", str);
-	fclose(file);
-
-	if (res != 1) {
-		MSG(0, "\tError: Failed to parse the device zoned model\n");
-		return -1;
-	}
-
-	if (strcmp(str, "none") == 0) {
+	if (strcmp(model_str, "none") == 0) {
 		/* Regular block device */
 		dev->zoned_model = F2FS_ZONED_NONE;
-	} else if (strcmp(str, "host-aware") == 0) {
+	} else if (strcmp(model_str, "host-aware") == 0) {
 		/* Host-aware zoned block device: can be randomly written */
 		dev->zoned_model = F2FS_ZONED_HA;
-	} else if (strcmp(str, "host-managed") == 0) {
+	} else if (strcmp(model_str, "host-managed") == 0) {
 		/* Host-managed zoned block device: sequential writes needed */
 		dev->zoned_model = F2FS_ZONED_HM;
 	} else {
-		MSG(0, "\tError: Unsupported device zoned model\n");
+		MSG(0, "\tError: Unsupported device zoned model: %s\n",
+							model_str);
+		free(model_str);
 		return -1;
 	}
-
+	free(model_str);
 	return 0;
 }
 
@@ -77,28 +144,17 @@ int f2fs_get_zone_blocks(int i)
 {
 	struct device_info *dev = c.devices + i;
 	uint64_t sectors;
-	char str[128];
-	FILE *file;
-	int res;
+	char * cs_str;
 
 	/* Get zone size */
 	dev->zone_blocks = 0;
 
-	snprintf(str, sizeof(str),
-		 "/sys/block/%s/queue/chunk_sectors",
-		 basename(dev->path));
-	file = fopen(str, "r");
-	if (!file)
+	cs_str = read_sys_attr(dev->path, "queue/chunk_sectors");
+	if (!cs_str)
 		return -1;
 
-	memset(str, 0, sizeof(str));
-	res = fscanf(file, "%s", str);
-	fclose(file);
-
-	if (res != 1)
-		return -1;
-
-	sectors = atol(str);
+	sectors = atol(cs_str);
+	free(cs_str);
 	if (!sectors)
 		return -1;
 
