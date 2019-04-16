@@ -806,9 +806,16 @@ int get_device_info(int i)
 	unsigned char model_inq[6] = {MODELINQUIRY};
 #endif
 	struct device_info *dev = c.devices + i;
+	int rw_flag;
+
+	/* Check FS only */
+	if (c.fix_on == 0 && c.auto_fix == 0)
+		rw_flag = O_RDONLY;
+	else
+		rw_flag = O_RDWR;
 
 	if (c.sparse_mode) {
-		fd = open(dev->path, O_RDWR | O_CREAT | O_BINARY, 0644);
+		fd = open(dev->path, rw_flag | O_CREAT | O_BINARY, 0644);
 		if (fd < 0) {
 			MSG(0, "\tError: Failed to open a sparse file!\n");
 			return -1;
@@ -826,9 +833,9 @@ int get_device_info(int i)
 		}
 
 		if (S_ISBLK(stat_buf->st_mode) && !c.force)
-			fd = open(dev->path, O_RDWR | O_EXCL);
+			fd = open(dev->path, rw_flag | O_EXCL);
 		else
-			fd = open(dev->path, O_RDWR);
+			fd = open(dev->path, rw_flag);
 	}
 	if (fd < 0) {
 		MSG(0, "\tError: Failed to open the device!\n");
