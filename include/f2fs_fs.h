@@ -311,6 +311,7 @@ enum f2fs_config_func {
 	DEFRAG,
 	RESIZE,
 	SLOAD,
+	TUNESB,
 };
 
 enum default_set {
