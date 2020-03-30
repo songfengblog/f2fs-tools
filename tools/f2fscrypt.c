@@ -63,6 +63,8 @@
 #define F2FS_ENCRYPTION_MODE_AES_256_GCM	2
 #define F2FS_ENCRYPTION_MODE_AES_256_CBC	3
 #define F2FS_ENCRYPTION_MODE_AES_256_CTS	4
+#define F2FS_ENCRYPTION_MODE_ADIANTUM		9
+#define F2FS_ENCRYPTION_MODE_PRIVATE		127
 
 #define F2FS_AES_256_XTS_KEY_SIZE		64
 #define F2FS_AES_256_GCM_KEY_SIZE		32
@@ -531,6 +533,33 @@ static void get_passphrase(char *passphrase, int len)
 	*p = '\0';
 }
 
+struct enc_mode_map {
+	int mode;
+	char name[255];
+};
+
+static const struct enc_mode_map enc_mode_str[] = {
+	{F2FS_ENCRYPTION_MODE_INVALID, "invalid"},
+	{F2FS_ENCRYPTION_MODE_AES_256_XTS, "aes_256_xts"},
+	{F2FS_ENCRYPTION_MODE_AES_256_GCM, "aes_256_gcm"},
+	{F2FS_ENCRYPTION_MODE_AES_256_CBC, "aes_256_cbc"},
+	{F2FS_ENCRYPTION_MODE_AES_256_CTS, "aes_256_cts"},
+	{F2FS_ENCRYPTION_MODE_ADIANTUM, "adiantum"},
+	{F2FS_ENCRYPTION_MODE_PRIVATE, "ice"},
+};
+
+static const char *get_crypt_mode(int mode)
+{
+	int i;
+
+	for (i = 0; i < (sizeof(enc_mode_str) / sizeof(enc_mode_str[0])); ++i) {
+		if (mode == enc_mode_str[i].mode) {
+			return enc_mode_str[i].name;
+		}
+	}
+	return "N/A";
+}
+
 struct keyring_map {
 	char name[4];
 	size_t name_len;
@@ -827,6 +856,11 @@ static void do_get_policy(int argc, char **argv, const struct cmd_desc *cmd)
 		for (j = 0; j < F2FS_KEY_DESCRIPTOR_SIZE; j++) {
 			printf("%02x", (unsigned char) policy.master_key_descriptor[j]);
 		}
+		printf("\tversion: %u\n", policy.version);
+		printf("\tcontents_encryption_mode : %s\n",
+			get_crypt_mode(policy.contents_encryption_mode));
+		printf("\tfilenames_encryption_mode: %s\n",
+			get_crypt_mode(policy.filenames_encryption_mode));
 		fputc('\n', stdout);
 	}
 	exit(0);
